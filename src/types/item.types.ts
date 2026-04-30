@@ -2,6 +2,7 @@ export interface Item {
     _id: string;
     name: string;
     price: number;
+    supplierPrice: number;
     stock: number;
     category: string;
     supplier: string;
@@ -10,3 +11,4 @@ export interface Item {
 }
 
 export type CreateItemInput = Omit<Item, "_id">;
+
