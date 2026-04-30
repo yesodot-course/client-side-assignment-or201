@@ -23,7 +23,7 @@ const initialState: ItemsState = {
  * 3. Thunk לשליפת מוצרים
  * ה-Thunk מחזיר Item[] כדי להתאים לתשובת השרת.
  */
-export const fetchItems = createAsyncThunk<Item[], void>("items/fetchItems", async () => {
+export const fetchItems = createAsyncThunk<Item[]>("items/fetchItems", async () => {
     const data = await itemService.getAll();
     return data;
 });
