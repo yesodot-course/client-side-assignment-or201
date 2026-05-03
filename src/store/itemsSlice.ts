@@ -1,10 +1,8 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import { itemService } from "../services/api.service";
+import type { PaginatedItems } from "../services/api.service";
 import type { CreateItemInput, Item } from "../types/item.types";
 
-/**
- * 2. הגדרת ה-State
- */
 interface ItemsState {
     items: Item[];
     totalItems: number;
@@ -19,14 +17,13 @@ const initialState: ItemsState = {
     error: null,
 };
 
-/**
- * 3. Thunk לשליפת מוצרים
- * ה-Thunk מחזיר Item[] כדי להתאים לתשובת השרת.
- */
-export const fetchItems = createAsyncThunk<Item[]>("items/fetchItems", async () => {
-    const data = await itemService.getAll();
-    return data;
-});
+export const fetchItems = createAsyncThunk<PaginatedItems, { page: number; limit: number }>(
+    "items/fetchItems",
+    async ({ page, limit }) => {
+        const data = await itemService.getAll(page, limit);
+        return data;
+    }
+);
 
 export const addItem = createAsyncThunk("items/addItem", async (newItem: CreateItemInput) => {
     const data = await itemService.create(newItem);
@@ -56,10 +53,10 @@ const itemsSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(fetchItems.fulfilled, (state, action: PayloadAction<Item[]>) => {
+            .addCase(fetchItems.fulfilled, (state, action: PayloadAction<PaginatedItems>) => {
                 state.loading = false;
-                state.items = action.payload;
-                state.totalItems = action.payload.length;
+                state.items = action.payload.items;
+                state.totalItems = action.payload.totalItems;
             })
             .addCase(fetchItems.rejected, (state, action) => {
                 state.loading = false;

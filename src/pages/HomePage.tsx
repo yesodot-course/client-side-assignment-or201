@@ -28,49 +28,40 @@ import {
 function HomePage() {
     const dispatch = useDispatch<AppDispatch>();
 
-    // שליפת הנתונים כולל totalItems מה-Redux
     const { items, totalItems, loading, error } = useSelector((state: RootState) => state.items);
     const cartItems = useSelector((state: RootState) => state.cart.items);
 
     const [quantities, setQuantities] = useState<{ [key: string]: number }>({});
     const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
-    // ניהול עמוד נוכחי
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 10;
 
-    const currentItems = items.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
-
     useEffect(() => {
-        // שליפה פעם אחת של כל המוצרים, ואז פירוק לעמודים בצד הלקוח
-        dispatch(fetchItems());
-    }, [dispatch]);
+        dispatch(fetchItems({ page: currentPage, limit: itemsPerPage }));
+    }, [dispatch, currentPage]);
 
     const handleAddToCart = (product: Item) => {
         const requestedQty = quantities[product._id] || 1;
 
-        // לוגיקה עסקית: מקסימום 50 פריטים כולל בעגלה
         const currentTotalQty = cartItems.reduce((sum, i) => sum + i.quantity, 0);
         if (currentTotalQty + requestedQty > 50) {
             setAlertMsg(`חריגה מהכמות הכוללת! מותר עד 50 פריטים (כרגע יש ${currentTotalQty}).`);
             return;
         }
 
-        // לוגיקה עסקית: מקסימום 10 סוגי מוצרים שונים
         const existingItem = cartItems.find((i) => i._id === product._id);
         if (!existingItem && cartItems.length >= 10) {
             setAlertMsg("לא ניתן להוסיף יותר מ-10 סוגי מוצרים שונים לעגלה.");
             return;
         }
 
-        // הגבלת כמות לאותו מוצר ספציפי (מקס' 10)
         const currentQtyInCart = existingItem ? existingItem.quantity : 0;
         if (currentQtyInCart + requestedQty > 10) {
             setAlertMsg(`לא ניתן להזמין יותר מ-10 יחידות מהמוצר ${product.name}.`);
             return;
         }
 
-        // בדיקת מלאי
         if (currentQtyInCart + requestedQty > product.stock) {
             setAlertMsg(`אין מספיק מלאי! המלאי הזמין הוא ${product.stock}.`);
             return;
@@ -127,7 +118,7 @@ function HomePage() {
                     },
                 }}
             >
-                {currentItems?.map((product) => (
+                {items?.map((product) => (
                     <Box key={product._id}>
                         <Card sx={{ height: "100%", display: "flex", flexDirection: "column", boxShadow: 3 }}>
                             <CardMedia
@@ -187,10 +178,9 @@ function HomePage() {
                 ))}
             </Box>
 
-            {/* רכיב ה-Pagination של Material UI */}
             <Box sx={{ display: "flex", justifyContent: "center", mt: 6 }}>
                 <Pagination
-                    count={Math.ceil(items.length / itemsPerPage) || 1}
+                    count={Math.ceil(totalItems / itemsPerPage) || 1}
                     page={currentPage}
                     onChange={(_, value) => setCurrentPage(value)}
                     color="primary"

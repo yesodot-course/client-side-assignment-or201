@@ -12,13 +12,18 @@ const apiClient = axios.create({
     },
 });
 
+export interface PaginatedItems {
+    items: Item[];
+    totalItems: number;
+}
+
 export const itemService = {
-    getAll: async (page?: number, limit?: number) => {
+    getAll: async (page?: number, limit?: number): Promise<PaginatedItems> => {
         const params = new URLSearchParams();
         if (page !== undefined) params.append("page", String(page));
         if (limit !== undefined) params.append("limit", String(limit));
         const query = params.toString() ? `?${params.toString()}` : "";
-        const response = await apiClient.get<Item[]>(`/items${query}`);
+        const response = await apiClient.get<PaginatedItems>(`/items${query}`);
         return response.data;
     },
     getById: async (id: string) => {
