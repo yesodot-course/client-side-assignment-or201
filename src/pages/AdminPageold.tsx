@@ -59,28 +59,6 @@ const emptySupplierForm: SupplierFormData = { name: "", contactInfo: "" };
 
 const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-const ITEMS_PER_PAGE = 10;
-
-// ─── Error extractor ─────────────────────────────────────────────────────────
-// Axios wraps server errors — we need to dig into response.data.message
-function extractErrorMessage(err: unknown): string {
-    if (err && typeof err === "object") {
-        // Redux Toolkit unwrap() throws the serialized error
-        const e = err as any;
-        // Axios error via RTK: e.message is usually "Request failed with status code 4xx"
-        // The actual server message lives in e.response?.data or was serialized differently
-        if (e.response?.data?.message) return e.response.data.message;
-        if (e.response?.data?.errors) {
-            // Zod validation array
-            const errs = e.response.data.errors;
-            if (Array.isArray(errs)) return errs.map((x: any) => x.message ?? x).join(", ");
-        }
-        if (e.data?.message) return e.data.message;
-        if (e.message) return e.message;
-    }
-    return "An unknown error occurred";
-}
-
 // ─── StatCard ────────────────────────────────────────────────────────────────
 
 function StatCard({ title, value, sub, icon, color }: {
@@ -105,11 +83,14 @@ function StatCard({ title, value, sub, icon, color }: {
 
 function AdminPage() {
     const dispatch = useDispatch<AppDispatch>();
-    const { items, totalItems, loading } = useSelector((state: RootState) => state.items);
+    const { items, totalItems } = useSelector((state: RootState) => state.items);
     const { suppliers } = useSelector((state: RootState) => state.suppliers);
 
     const [tab, setTab] = useState(0);
+
+    // Pagination for products table
     const [currentPage, setCurrentPage] = useState(1);
+    const ITEMS_PER_PAGE = 10;
 
     // Item state
     const [itemForm, setItemForm] = useState<ItemFormData>(emptyItemForm);
@@ -134,10 +115,10 @@ function AdminPage() {
         open: false, message: "", severity: "success",
     });
 
-    // ── Fetch items & suppliers on mount (so Admin works without visiting Home first)
+    // ✅ FIX: Fetch both suppliers AND items on mount so Admin works standalone
     useEffect(() => {
-        dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
         dispatch(fetchSuppliers());
+        dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
     }, [dispatch, currentPage]);
 
     useEffect(() => {
@@ -150,8 +131,6 @@ function AdminPage() {
 
     const showSnack = (message: string, severity: "success" | "error" = "success") =>
         setSnackbar({ open: true, message, severity });
-
-    const showError = (err: unknown) => showSnack(extractErrorMessage(err), "error");
 
     // ─── Analytics ──────────────────────────────────────────────────────────
 
@@ -175,8 +154,8 @@ function AdminPage() {
                 topSupplier:      topSupplier.status      === "fulfilled" ? topSupplier.value      : null,
                 supplierSpending: supplierSpending.status === "fulfilled" ? supplierSpending.value : null,
             });
-        } catch (err) {
-            showError(err);
+        } catch {
+            showSnack("Failed to load analytics", "error");
         } finally {
             setAnalyticsLoading(false);
         }
@@ -189,8 +168,8 @@ function AdminPage() {
         try {
             const data = await orderService.getAll();
             setOrders(Array.isArray(data) ? data : []);
-        } catch (err) {
-            showError(err);
+        } catch {
+            showSnack("Failed to load orders", "error");
         } finally {
             setOrdersLoading(false);
         }
@@ -198,14 +177,11 @@ function AdminPage() {
 
     // ─── Item helpers ────────────────────────────────────────────────────────
 
-    // After populate, supplier is an object {_id, name}. Before populate it's a string ID.
-    // We handle both cases and fall back to looking up in the suppliers store.
-    const getSupplierName = (supplier: Item["supplier"]): string => {
-        if (!supplier) return "—";
-        if (typeof supplier === "object") return (supplier as any).name ?? "—";
-        // It's a string ID — look up in redux store
+    const getSupplierName = (supplier: Item["supplier"]) => {
+        if (typeof supplier === "object" && supplier !== null)
+            return (supplier as any).name ?? "";
         const found = suppliers.find((s) => s._id === supplier);
-        return found ? found.name : "—";
+        return found ? found.name : String(supplier);
     };
 
     const handleAddItem = async (e: React.FormEvent) => {
@@ -218,10 +194,12 @@ function AdminPage() {
             await dispatch(addItem(itemForm)).unwrap();
             setItemForm(emptyItemForm);
             showSnack("Product added successfully");
-            // Refresh current page so new item appears
-            dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
-        } catch (err) {
-            showError(err);
+        } catch (err: any) {
+            const msg =
+                err?.response?.data?.message ??
+                err?.message ??
+                "Failed to add product";
+            showSnack(msg, "error");
         }
     };
 
@@ -234,7 +212,7 @@ function AdminPage() {
         setItemForm({
             name: item.name,
             price: item.price ?? 0,
-            category: item.category ?? "",
+            category: item.category,
             image: (item as any).image ?? "",
             stock: item.stock,
             description: (item as any).description ?? "",
@@ -252,19 +230,18 @@ function AdminPage() {
             setEditingItem(null);
             setItemForm(emptyItemForm);
             showSnack("Product updated successfully");
-        } catch (err) {
-            showError(err);
+        } catch (err: any) {
+            // ✅ FIX: rejectWithValue returns the string directly as err
+            const msg = typeof err === "string" ? err : (err?.message ?? "Failed to update product");
+            showSnack(msg, "error");
         }
     };
 
     const handleDeleteItem = (id: string) => {
         if (!window.confirm("Are you sure you want to delete this item?")) return;
         dispatch(deleteItem(id)).unwrap()
-            .then(() => {
-                showSnack("Product deleted");
-                dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
-            })
-            .catch(showError);
+            .then(() => showSnack("Product deleted"))
+            .catch(() => showSnack("Failed to delete product", "error"));
     };
 
     // ─── Supplier helpers ────────────────────────────────────────────────────
@@ -276,8 +253,8 @@ function AdminPage() {
             await dispatch(addSupplier(supplierForm)).unwrap();
             setSupplierForm(emptySupplierForm);
             showSnack("Supplier added successfully");
-        } catch (err) {
-            showError(err);
+        } catch {
+            showSnack("Failed to add supplier", "error");
         }
     };
 
@@ -295,8 +272,8 @@ function AdminPage() {
             setEditingSupplier(null);
             setSupplierForm(emptySupplierForm);
             showSnack("Supplier updated successfully");
-        } catch (err) {
-            showError(err);
+        } catch {
+            showSnack("Failed to update supplier", "error");
         }
     };
 
@@ -304,10 +281,10 @@ function AdminPage() {
         if (!window.confirm("Deleting a supplier will also delete all their products. Are you sure?")) return;
         dispatch(deleteSupplier(id)).unwrap()
             .then(() => showSnack("Supplier deleted"))
-            .catch(showError);
+            .catch(() => showSnack("Failed to delete supplier", "error"));
     };
 
-    // ─── Shared item fields (used in both Add form and Edit dialog) ──────────
+    // ─── ItemForm (shared between Add panel and Edit dialog) ─────────────────
 
     const renderItemFields = () => (
         <>
@@ -365,77 +342,64 @@ function AdminPage() {
 
             {/* ══════════════ PRODUCTS ══════════════ */}
             {tab === 0 && (
-                <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <Box sx={{ display: "grid", gap: 4, gridTemplateColumns: { xs: "1fr", md: "360px 1fr" } }}>
-                        {/* Add form */}
-                        <Paper elevation={3} sx={{ p: 3, borderRadius: 2 }}>
-                            <Typography variant="h6" gutterBottom fontWeight="bold">Add New Product</Typography>
-                            <Box component="form" onSubmit={handleAddItem}
-                                sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                {renderItemFields()}
-                                <Button type="submit" variant="contained" startIcon={<AddIcon />} fullWidth>
-                                    Create Product
-                                </Button>
-                            </Box>
-                        </Paper>
-
-                        {/* Products table */}
-                        <Box>
-                            {loading ? (
-                                <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-                                    <CircularProgress />
-                                </Box>
-                            ) : (
-                                <TableContainer component={Paper} elevation={3} sx={{ borderRadius: 2 }}>
-                                    <Table>
-                                        <TableHead sx={{ bgcolor: "grey.100" }}>
-                                            <TableRow>
-                                                <TableCell sx={{ fontWeight: "bold" }}>Product</TableCell>
-                                                <TableCell sx={{ fontWeight: "bold" }}>Supplier</TableCell>
-                                                <TableCell sx={{ fontWeight: "bold" }} align="right">S. Price</TableCell>
-                                                <TableCell sx={{ fontWeight: "bold" }} align="right">Retail</TableCell>
-                                                <TableCell sx={{ fontWeight: "bold" }} align="right">Stock</TableCell>
-                                                <TableCell sx={{ fontWeight: "bold" }} align="center">Actions</TableCell>
-                                            </TableRow>
-                                        </TableHead>
-                                        <TableBody>
-                                            {items.map((item) => (
-                                                <TableRow key={item._id} hover>
-                                                    <TableCell>{item.name}</TableCell>
-                                                    <TableCell>{getSupplierName(item.supplier)}</TableCell>
-                                                    <TableCell align="right">₪{item.supplierPrice}</TableCell>
-                                                    <TableCell align="right">₪{item.price}</TableCell>
-                                                    <TableCell align="right">
-                                                        <Chip label={item.stock} size="small"
-                                                            color={item.stock < 5 ? "error" : item.stock < 20 ? "warning" : "success"} />
-                                                    </TableCell>
-                                                    <TableCell align="center">
-                                                        <IconButton color="primary" onClick={() => openEditItem(item)}>
-                                                            <EditIcon />
-                                                        </IconButton>
-                                                        <IconButton color="error" onClick={() => handleDeleteItem(item._id)}>
-                                                            <DeleteIcon />
-                                                        </IconButton>
-                                                    </TableCell>
-                                                </TableRow>
-                                            ))}
-                                        </TableBody>
-                                    </Table>
-                                </TableContainer>
-                            )}
-
-                            {/* Pagination */}
-                            {totalItems > ITEMS_PER_PAGE && (
-                                <Box sx={{ display: "flex", justifyContent: "center", mt: 3 }}>
-                                    <Pagination
-                                        count={Math.ceil(totalItems / ITEMS_PER_PAGE)}
-                                        page={currentPage}
-                                        onChange={(_, v) => setCurrentPage(v)}
-                                        color="primary"
-                                    />
-                                </Box>
-                            )}
+                <Box sx={{ display: "grid", gap: 4, gridTemplateColumns: { xs: "1fr", md: "360px 1fr" } }}>
+                    <Paper elevation={3} sx={{ p: 3, borderRadius: 2 }}>
+                        <Typography variant="h6" gutterBottom fontWeight="bold">Add New Product</Typography>
+                        <Box component="form" onSubmit={handleAddItem}
+                            sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                            {renderItemFields()}
+                            <Button type="submit" variant="contained" startIcon={<AddIcon />} fullWidth>
+                                Create Product
+                            </Button>
                         </Box>
+                    </Paper>
+
+                    <TableContainer component={Paper} elevation={3} sx={{ borderRadius: 2 }}>
+                        <Table>
+                            <TableHead sx={{ bgcolor: "grey.100" }}>
+                                <TableRow>
+                                    <TableCell sx={{ fontWeight: "bold" }}>Product</TableCell>
+                                    <TableCell sx={{ fontWeight: "bold" }}>Supplier</TableCell>
+                                    <TableCell sx={{ fontWeight: "bold" }} align="right">S. Price</TableCell>
+                                    <TableCell sx={{ fontWeight: "bold" }} align="right">Retail</TableCell>
+                                    <TableCell sx={{ fontWeight: "bold" }} align="right">Stock</TableCell>
+                                    <TableCell sx={{ fontWeight: "bold" }} align="center">Actions</TableCell>
+                                </TableRow>
+                            </TableHead>
+                            <TableBody>
+                                {items.map((item) => (
+                                    <TableRow key={item._id} hover>
+                                        <TableCell>{item.name}</TableCell>
+                                        <TableCell>{getSupplierName(item.supplier)}</TableCell>
+                                        <TableCell align="right">₪{item.supplierPrice}</TableCell>
+                                        <TableCell align="right">₪{item.price}</TableCell>
+                                        <TableCell align="right">
+                                            <Chip label={item.stock} size="small"
+                                                color={item.stock < 5 ? "error" : item.stock < 20 ? "warning" : "success"} />
+                                        </TableCell>
+                                        <TableCell align="center">
+                                            <IconButton color="primary" onClick={() => openEditItem(item)}>
+                                                <EditIcon />
+                                            </IconButton>
+                                            <IconButton color="error" onClick={() => handleDeleteItem(item._id)}>
+                                                <DeleteIcon />
+                                            </IconButton>
+                                        </TableCell>
+                                    </TableRow>
+                                ))}
+                            </TableBody>
+                        </Table>
+                    </TableContainer>
+
+                    {/* ✅ Pagination for products */}
+                    <Box sx={{ display: "flex", justifyContent: "center", mt: 2, gridColumn: "1 / -1" }}>
+                        <Pagination
+                            count={Math.ceil(totalItems / ITEMS_PER_PAGE) || 1}
+                            page={currentPage}
+                            onChange={(_, value) => setCurrentPage(value)}
+                            color="primary"
+                            size="medium"
+                        />
                     </Box>
                 </Box>
             )}
@@ -472,7 +436,7 @@ function AdminPage() {
                                 {suppliers.map((supplier) => (
                                     <TableRow key={supplier._id} hover>
                                         <TableCell>{supplier.name}</TableCell>
-                                        <TableCell>{(supplier as any).contactInfo ?? "—"}</TableCell>
+                                        <TableCell>{(supplier as any).contactInfo}</TableCell>
                                         <TableCell align="center">
                                             <IconButton color="primary" onClick={() => openEditSupplier(supplier)}>
                                                 <EditIcon />
@@ -498,6 +462,7 @@ function AdminPage() {
                         </Box>
                     ) : analytics ? (
                         <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            {/* KPI Cards */}
                             <Grid container spacing={2}>
                                 <Grid item xs={12} sm={6} md={3}>
                                     <StatCard
@@ -543,6 +508,7 @@ function AdminPage() {
                                 </Grid>
                             </Grid>
 
+                            {/* Monthly Revenue */}
                             {Array.isArray(analytics.revenue) && analytics.revenue.length > 0 && (
                                 <Paper elevation={2} sx={{ borderRadius: 2, p: 3 }}>
                                     <Typography variant="h6" fontWeight="bold" gutterBottom>Monthly Revenue</Typography>
@@ -560,7 +526,9 @@ function AdminPage() {
                                                     <TableRow key={i} hover>
                                                         <TableCell>{MONTH_NAMES[(row._id?.month ?? 1) - 1]}</TableCell>
                                                         <TableCell>{row._id?.year}</TableCell>
-                                                        <TableCell align="right">₪{Number(row.totalRevenue).toFixed(2)}</TableCell>
+                                                        <TableCell align="right">
+                                                            ₪{Number(row.totalRevenue).toFixed(2)}
+                                                        </TableCell>
                                                     </TableRow>
                                                 ))}
                                             </TableBody>
@@ -569,6 +537,7 @@ function AdminPage() {
                                 </Paper>
                             )}
 
+                            {/* Supplier Spending */}
                             {Array.isArray(analytics.supplierSpending) && analytics.supplierSpending.length > 0 && (
                                 <Paper elevation={2} sx={{ borderRadius: 2, p: 3 }}>
                                     <Typography variant="h6" fontWeight="bold" gutterBottom>Supplier Spending</Typography>
@@ -584,7 +553,9 @@ function AdminPage() {
                                                 {analytics.supplierSpending.map((row: any, i: number) => (
                                                     <TableRow key={i} hover>
                                                         <TableCell>{row.supplierName ?? row.supplierId}</TableCell>
-                                                        <TableCell align="right">₪{Number(row.totalSpent).toFixed(2)}</TableCell>
+                                                        <TableCell align="right">
+                                                            ₪{Number(row.totalSpent).toFixed(2)}
+                                                        </TableCell>
                                                     </TableRow>
                                                 ))}
                                             </TableBody>
@@ -593,24 +564,31 @@ function AdminPage() {
                                 </Paper>
                             )}
 
+                            {/* Profit Margins */}
                             {analytics.profitMargins && (
                                 <Paper elevation={2} sx={{ borderRadius: 2, p: 3 }}>
                                     <Typography variant="h6" fontWeight="bold" gutterBottom>Profit Margins</Typography>
                                     <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 2 }}>
                                         <Box>
                                             <Typography variant="body2" color="text.secondary">Highest Margin</Typography>
-                                            <Typography fontWeight="bold">{analytics.profitMargins.highestMargin?.name ?? "N/A"}</Typography>
+                                            <Typography fontWeight="bold">
+                                                {analytics.profitMargins.highestMargin?.name ?? "N/A"}
+                                            </Typography>
                                             <Typography color="success.main">
                                                 {analytics.profitMargins.highestMargin
-                                                    ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%` : ""}
+                                                    ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%`
+                                                    : ""}
                                             </Typography>
                                         </Box>
                                         <Box>
                                             <Typography variant="body2" color="text.secondary">Lowest Margin</Typography>
-                                            <Typography fontWeight="bold">{analytics.profitMargins.lowestMargin?.name ?? "N/A"}</Typography>
+                                            <Typography fontWeight="bold">
+                                                {analytics.profitMargins.lowestMargin?.name ?? "N/A"}
+                                            </Typography>
                                             <Typography color="error.main">
                                                 {analytics.profitMargins.lowestMargin
-                                                    ? `${(analytics.profitMargins.lowestMargin.margin * 100).toFixed(1)}%` : ""}
+                                                    ? `${(analytics.profitMargins.lowestMargin.margin * 100).toFixed(1)}%`
+                                                    : ""}
                                             </Typography>
                                         </Box>
                                     </Box>
@@ -657,7 +635,8 @@ function AdminPage() {
                                     <TableBody>
                                         {orders.length === 0 ? (
                                             <TableRow>
-                                                <TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                                                <TableCell colSpan={6} align="center"
+                                                    sx={{ py: 4, color: "text.secondary" }}>
                                                     No orders found
                                                 </TableCell>
                                             </TableRow>
@@ -667,7 +646,8 @@ function AdminPage() {
                                                     {String(order._id).slice(-8)}
                                                 </TableCell>
                                                 <TableCell>
-                                                    {new Date(order.orderDate ?? order.createdAt).toLocaleDateString("he-IL")}
+                                                    {new Date(order.orderDate ?? order.createdAt)
+                                                        .toLocaleDateString("he-IL")}
                                                 </TableCell>
                                                 <TableCell>{order.address}</TableCell>
                                                 <TableCell>
@@ -678,7 +658,9 @@ function AdminPage() {
                                                         ))}
                                                     </Box>
                                                 </TableCell>
-                                                <TableCell align="right">₪{Number(order.totalAmount).toFixed(2)}</TableCell>
+                                                <TableCell align="right">
+                                                    ₪{Number(order.totalAmount).toFixed(2)}
+                                                </TableCell>
                                                 <TableCell align="right">
                                                     <Typography fontWeight="bold"
                                                         color={order.shopProfit >= 0 ? "success.main" : "error.main"}>
@@ -729,7 +711,7 @@ function AdminPage() {
             </Dialog>
 
             {/* ══════════════ SNACKBAR ══════════════ */}
-            <Snackbar open={snackbar.open} autoHideDuration={5000}
+            <Snackbar open={snackbar.open} autoHideDuration={3000}
                 onClose={() => setSnackbar({ ...snackbar, open: false })}>
                 <Alert severity={snackbar.severity} onClose={() => setSnackbar({ ...snackbar, open: false })}>
                     {snackbar.message}

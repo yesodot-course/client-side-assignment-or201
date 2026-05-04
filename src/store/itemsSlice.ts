@@ -30,11 +30,22 @@ export const addItem = createAsyncThunk("items/addItem", async (newItem: CreateI
     return data;
 });
 
-export const updateItem = createAsyncThunk(
+export const updateItem = createAsyncThunk<Item, { id: string; data: Partial<Item> }, { rejectValue: string }>(
     "items/updateItem",
-    async ({ id, data }: { id: string; data: Partial<Item> }) => {
-        const response = await itemService.update(id, data);
-        return response;
+    async ({ id, data }, { rejectWithValue }) => {
+        try {
+            const response = await itemService.update(id, data);
+            return response;
+        } catch (err) {
+            // ✅ no 'any' — use unknown pattern
+            const axiosErr = err as { response?: { data?: { message?: string; errors?: { message: string }[] } }; message?: string };
+            const msg =
+                axiosErr?.response?.data?.message ??
+                axiosErr?.response?.data?.errors?.[0]?.message ??
+                axiosErr?.message ??
+                "Update failed";
+            return rejectWithValue(msg);
+        }
     }
 );
 

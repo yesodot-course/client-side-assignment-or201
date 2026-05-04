@@ -34,8 +34,9 @@ export const itemService = {
         const response = await apiClient.post<Item>("/items", item);
         return response.data;
     },
+    // FIX: was PUT, server expects PATCH
     update: async (id: string, item: Partial<Item>) => {
-        const response = await apiClient.put<Item>(`/items/${id}`, item);
+        const response = await apiClient.patch<Item>(`/items/${id}`, item);
         return response.data;
     },
     delete: async (id: string) => {
@@ -66,6 +67,10 @@ export const supplierService = {
 export const orderService = {
     placeOrder: async (order: CreateOrderInput) => {
         const response = await apiClient.post<Order>("/orders", order);
+        return response.data;
+    },
+    getAll: async () => {
+        const response = await apiClient.get<Order[]>("/orders");
         return response.data;
     },
 };
