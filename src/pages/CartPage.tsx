@@ -1,128 +1,202 @@
+import { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState, AppDispatch } from '../store/index';
 import { removeFromCart, updateQuantity, placeOrder } from '../store/cartSlice.store';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import {
+    Container, Typography, Box, Paper, Table, TableHead, TableRow,
+    TableCell, TableBody, TableContainer, IconButton, TextField, Button,
+    Divider, Chip, Alert, Snackbar,
+} from '@mui/material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import ShoppingCartCheckoutIcon from '@mui/icons-material/ShoppingCartCheckout';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 
 function CartPage() {
-  const { items } = useSelector((state: RootState) => state.cart);
-  const dispatch = useDispatch<AppDispatch>();
+    const { items } = useSelector((state: RootState) => state.cart);
+    const dispatch = useDispatch<AppDispatch>();
+    const navigate = useNavigate();
 
-  const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const [address, setAddress] = useState('');
+    const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+        open: false, message: '', severity: 'success',
+    });
 
-  // פונקציה לבדיקת מגבלות ועדכון כמות
-  const handleQtyChange = (id: string, newQty: number, stock: number) => {
-    // 1. הגבלת מינימום פריט אחד
-    if (newQty < 1) return;
+    const totalAmount = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-    // 2. הגבלה: מקסימום 10 פריטים מאותו סוג (כפי שמופיע בדרישות)
-    if (newQty > 10) {
-      alert("Maximum 10 units allowed per product type.");
-      return;
+    const handleQtyChange = (id: string, newQty: number, stock: number) => {
+        if (newQty < 1) return;
+        if (newQty > 10) {
+            setSnackbar({ open: true, message: 'Maximum 10 units per product type.', severity: 'error' });
+            return;
+        }
+        if (newQty > stock) {
+            setSnackbar({ open: true, message: `Only ${stock} units available in stock.`, severity: 'error' });
+            return;
+        }
+        const otherItemsQty = items.filter(i => i._id !== id).reduce((sum, i) => sum + i.quantity, 0);
+        if (otherItemsQty + newQty > 50) {
+            setSnackbar({ open: true, message: 'Total cart quantity cannot exceed 50 items.', severity: 'error' });
+            return;
+        }
+        dispatch(updateQuantity({ id, quantity: newQty }));
+    };
+
+    const handlePlaceOrder = async () => {
+        if (items.length === 0) return;
+        if (!address.trim() || address.trim().length < 5) {
+            setSnackbar({ open: true, message: 'Please enter a valid delivery address (min 5 characters).', severity: 'error' });
+            return;
+        }
+
+        try {
+            const orderData = {
+                items: items.map(item => ({
+                    item: item._id,       // server expects "item", not "itemId"
+                    quantity: item.quantity,
+                })),
+                address: address.trim(),
+            };
+
+            await dispatch(placeOrder(orderData as any)).unwrap();
+            setSnackbar({ open: true, message: 'Order placed successfully! 🎉', severity: 'success' });
+            setAddress('');
+            // Navigate home after short delay
+            setTimeout(() => navigate('/'), 1500);
+        } catch (err: any) {
+            // rejectWithValue returns the server payload directly
+            const msg =
+                err?.message ??
+                err?.errors?.map((e: any) => e.message).join(', ') ??
+                'Failed to place order';
+            setSnackbar({ open: true, message: msg, severity: 'error' });
+        }
+    };
+
+    if (items.length === 0) {
+        return (
+            <Container maxWidth="sm" sx={{ py: 8, textAlign: 'center' }}>
+                <Typography variant="h5" gutterBottom>Your cart is empty</Typography>
+                <Button component={Link} to="/" variant="contained" startIcon={<ArrowBackIcon />}>
+                    Go back to store
+                </Button>
+            </Container>
+        );
     }
 
-    // 3. הגבלה: מלאי זמין
-    if (newQty > stock) {
-      alert(`Only ${stock} units available in stock.`);
-      return;
-    }
-
-    // 4. הגבלה: מקסימום 50 פריטים סך הכל בעגלה
-    const otherItemsQty = items
-      .filter(i => i._id !== id)
-      .reduce((sum, i) => sum + i.quantity, 0);
-
-    if (otherItemsQty + newQty > 50) {
-      alert("Total cart quantity cannot exceed 50 items.");
-      return;
-    }
-
-    // אם עבר את כל הבדיקות - מעדכנים
-    dispatch(updateQuantity({ id, quantity: newQty }));
-  };
-
-  const handlePlaceOrder = async () => {
-    if (items.length === 0) return;
-    
-    try {
-      const orderData = {
-        items: items.map(item => ({
-          itemId: item._id,
-          quantity: item.quantity
-        }))
-      };
-      
-      await dispatch(placeOrder(orderData)).unwrap();
-      alert('Order placed successfully!');
-    } catch (err) {
-      alert('Failed to place order: ' + (err as Error).message);
-    }
-  };
-
-  if (items.length === 0) {
     return (
-      <div style={{ padding: '20px' }}>
-        <h1>Your Cart</h1>
-        <p>Your cart is empty.</p>
-        <Link to="/">Go back to store</Link>
-      </div>
-    );
-  }
+        <Container maxWidth="md" sx={{ py: 4 }}>
+            <Typography variant="h4" gutterBottom fontWeight="bold"
+                sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <ShoppingCartCheckoutIcon color="primary" /> Your Cart
+            </Typography>
+            <Divider sx={{ mb: 3 }} />
 
-  return (
-    <div style={{ padding: '20px' }}>
-      <h1>Your Cart</h1>
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr style={{ borderBottom: '2px solid #ccc' }}>
-            <th style={{ textAlign: 'left', padding: '10px' }}>Product</th>
-            <th style={{ textAlign: 'left', padding: '10px' }}>Price</th>
-            <th style={{ textAlign: 'left', padding: '10px' }}>Quantity</th>
-            <th style={{ textAlign: 'left', padding: '10px' }}>Total</th>
-            <th style={{ textAlign: 'left', padding: '10px' }}>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item._id} style={{ borderBottom: '1px solid #eee' }}>
-              <td style={{ padding: '10px' }}>{item.name}</td>
-              <td style={{ padding: '10px' }}>₪{item.price}</td>
-              <td style={{ padding: '10px' }}>
-                <input
-                  type="number"
-                  min="1"
-                  max="10" // הגבלה ויזואלית בדפדפן
-                  value={item.quantity}
-                  onChange={(e) => handleQtyChange(item._id, parseInt(e.target.value) || 1, item.stock)}
-                  style={{ width: '50px' }}
+            <TableContainer component={Paper} elevation={3} sx={{ borderRadius: 2, mb: 3 }}>
+                <Table>
+                    <TableHead sx={{ bgcolor: 'grey.100' }}>
+                        <TableRow>
+                            <TableCell sx={{ fontWeight: 'bold' }}>Product</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Price</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="center">Quantity</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="right">Total</TableCell>
+                            <TableCell sx={{ fontWeight: 'bold' }} align="center">Remove</TableCell>
+                        </TableRow>
+                    </TableHead>
+                    <TableBody>
+                        {items.map((item) => (
+                            <TableRow key={item._id} hover>
+                                <TableCell>
+                                    <Typography fontWeight="medium">{item.name}</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Stock: {item.stock}
+                                    </Typography>
+                                </TableCell>
+                                <TableCell align="right">₪{item.price}</TableCell>
+                                <TableCell align="center">
+                                    <TextField
+                                        type="number"
+                                        size="small"
+                                        value={item.quantity}
+                                        onChange={(e) => handleQtyChange(item._id, parseInt(e.target.value) || 1, item.stock)}
+                                        slotProps={{
+                                            htmlInput: {
+                                                min: 1,
+                                                max: Math.min(10, item.stock),
+                                                style: { textAlign: 'center', width: 60 },
+                                            },
+                                        }}
+                                    />
+                                </TableCell>
+                                <TableCell align="right">
+                                    <Typography fontWeight="bold">₪{(item.price * item.quantity).toFixed(2)}</Typography>
+                                </TableCell>
+                                <TableCell align="center">
+                                    <IconButton color="error" onClick={() => dispatch(removeFromCart(item._id))}>
+                                        <DeleteIcon />
+                                    </IconButton>
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                </Table>
+            </TableContainer>
+
+            {/* Summary + checkout */}
+            <Paper elevation={3} sx={{ p: 3, borderRadius: 2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                    <Typography variant="body1" color="text.secondary">
+                        {items.length} product type{items.length !== 1 ? 's' : ''} ·{' '}
+                        {items.reduce((s, i) => s + i.quantity, 0)} items
+                    </Typography>
+                    <Chip
+                        label={`Total: ₪${totalAmount.toFixed(2)}`}
+                        color="primary"
+                        sx={{ fontSize: 16, fontWeight: 'bold', px: 1 }}
+                    />
+                </Box>
+
+                <TextField
+                    label="Delivery Address"
+                    placeholder="Enter your full delivery address..."
+                    fullWidth
+                    required
+                    value={address}
+                    onChange={(e) => setAddress(e.target.value)}
+                    sx={{ mb: 2 }}
+                    helperText="Minimum 5 characters"
                 />
-              </td>
-              <td style={{ padding: '10px' }}>₪{item.price * item.quantity}</td>
-              <td style={{ padding: '10px' }}>
-                <button onClick={() => dispatch(removeFromCart(item._id))}>Remove</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
 
-      <div style={{ marginTop: '20px', textAlign: 'right' }}>
-        <h2>Total Amount: ₪{totalAmount}</h2>
-        <button 
-          onClick={handlePlaceOrder}
-          style={{ 
-            padding: '10px 20px', 
-            backgroundColor: '#28a745', 
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '4px', 
-            cursor: 'pointer' 
-          }}
-        >
-          Place Order
-        </button>
-      </div>
-    </div>
-  );
+                <Box sx={{ display: 'flex', gap: 2 }}>
+                    <Button component={Link} to="/" variant="outlined" startIcon={<ArrowBackIcon />}>
+                        Continue Shopping
+                    </Button>
+                    <Button
+                        variant="contained"
+                        color="success"
+                        size="large"
+                        startIcon={<ShoppingCartCheckoutIcon />}
+                        onClick={handlePlaceOrder}
+                        disabled={items.length === 0}
+                        sx={{ flexGrow: 1 }}
+                    >
+                        Place Order · ₪{totalAmount.toFixed(2)}
+                    </Button>
+                </Box>
+            </Paper>
+
+            <Snackbar
+                open={snackbar.open}
+                autoHideDuration={5000}
+                onClose={() => setSnackbar({ ...snackbar, open: false })}
+                anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+            >
+                <Alert severity={snackbar.severity} onClose={() => setSnackbar({ ...snackbar, open: false })}>
+                    {snackbar.message}
+                </Alert>
+            </Snackbar>
+        </Container>
+    );
 }
 
 export default CartPage;

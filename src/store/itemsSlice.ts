@@ -1,10 +1,9 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from "@reduxjs/toolkit";
 import { itemService } from "../services/api.service";
+import type { PaginatedItems } from "../services/api.service";
 import type { CreateItemInput, Item } from "../types/item.types";
+import axios from "axios";
 
-/**
- * 2. הגדרת ה-State
- */
 interface ItemsState {
     items: Item[];
     totalItems: number;
@@ -19,32 +18,61 @@ const initialState: ItemsState = {
     error: null,
 };
 
-/**
- * 3. Thunk לשליפת מוצרים
- * ה-Thunk מחזיר Item[] כדי להתאים לתשובת השרת.
- */
-export const fetchItems = createAsyncThunk<Item[], void>("items/fetchItems", async () => {
-    const data = await itemService.getAll();
-    return data;
-});
+// Helper: extract the real server message from an axios error
+function extractServerMessage(err: unknown): string {
+    if (axios.isAxiosError(err) && err.response?.data) {
+        const data = err.response.data;
+        if (typeof data.message === "string") return data.message;
+        if (Array.isArray(data.errors)) return data.errors.map((e: any) => e.message).join(", ");
+    }
+    if (err instanceof Error) return err.message;
+    return "An unknown error occurred";
+}
 
-export const addItem = createAsyncThunk("items/addItem", async (newItem: CreateItemInput) => {
-    const data = await itemService.create(newItem);
-    return data;
-});
-
-export const updateItem = createAsyncThunk(
-    "items/updateItem",
-    async ({ id, data }: { id: string; data: Partial<Item> }) => {
-        const response = await itemService.update(id, data);
-        return response;
+export const fetchItems = createAsyncThunk<PaginatedItems, { page: number; limit: number }>(
+    "items/fetchItems",
+    async ({ page, limit }, { rejectWithValue }) => {
+        try {
+            return await itemService.getAll(page, limit);
+        } catch (err) {
+            return rejectWithValue(extractServerMessage(err));
+        }
     }
 );
 
-export const deleteItem = createAsyncThunk("items/deleteItem", async (id: string) => {
-    await itemService.delete(id);
-    return id;
-});
+export const addItem = createAsyncThunk(
+    "items/addItem",
+    async (newItem: CreateItemInput, { rejectWithValue }) => {
+        try {
+            return await itemService.create(newItem);
+        } catch (err) {
+            return rejectWithValue(extractServerMessage(err));
+        }
+    }
+);
+
+export const updateItem = createAsyncThunk(
+    "items/updateItem",
+    async ({ id, data }: { id: string; data: Partial<Item> }, { rejectWithValue }) => {
+        try {
+            return await itemService.update(id, data);
+        } catch (err) {
+            return rejectWithValue(extractServerMessage(err));
+        }
+    }
+);
+
+export const deleteItem = createAsyncThunk(
+    "items/deleteItem",
+    async (id: string, { rejectWithValue }) => {
+        try {
+            await itemService.delete(id);
+            return id;
+        } catch (err) {
+            return rejectWithValue(extractServerMessage(err));
+        }
+    }
+);
 
 const itemsSlice = createSlice({
     name: "items",
@@ -56,25 +84,22 @@ const itemsSlice = createSlice({
                 state.loading = true;
                 state.error = null;
             })
-            .addCase(fetchItems.fulfilled, (state, action: PayloadAction<Item[]>) => {
+            .addCase(fetchItems.fulfilled, (state, action: PayloadAction<PaginatedItems>) => {
                 state.loading = false;
-                state.items = action.payload;
-                state.totalItems = action.payload.length;
+                state.items = action.payload.items;
+                state.totalItems = action.payload.totalItems;
             })
             .addCase(fetchItems.rejected, (state, action) => {
                 state.loading = false;
-                state.error = action.error.message ?? "Failed to fetch items";
+                state.error = (action.payload as string) ?? action.error.message ?? "Failed to fetch items";
             })
-
             .addCase(addItem.fulfilled, (state, action: PayloadAction<Item>) => {
                 state.items.push(action.payload);
                 state.totalItems += 1;
             })
             .addCase(updateItem.fulfilled, (state, action: PayloadAction<Item>) => {
                 const index = state.items.findIndex((item) => item._id === action.payload._id);
-                if (index !== -1) {
-                    state.items[index] = action.payload;
-                }
+                if (index !== -1) state.items[index] = action.payload;
             })
             .addCase(deleteItem.fulfilled, (state, action: PayloadAction<string>) => {
                 state.items = state.items.filter((item) => item._id !== action.payload);
