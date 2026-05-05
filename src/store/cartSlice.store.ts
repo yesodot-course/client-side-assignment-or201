@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/tool
 import { orderService } from '../services/api.service';
 import type { CreateOrderInput } from '../types/order.types';
 import type { Item } from '../types/item.types';
+import axios from 'axios';
 
 interface CartItem extends Item {
   quantity: number;
@@ -17,15 +18,33 @@ const initialState: CartState = {
   totalAmount: 0,
 };
 
+// KEY FIX: use rejectWithValue to preserve the real server error message.
+// Without this, RTK serializes the axios error and loses response.data.
+export const placeOrder = createAsyncThunk(
+  'cart/placeOrder',
+  async (orderData: CreateOrderInput, { rejectWithValue }) => {
+    try {
+      const response = await orderService.placeOrder(orderData);
+      return response;
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.data) {
+        // Return the real server message so the UI can display it
+        return rejectWithValue(err.response.data);
+      }
+      return rejectWithValue({ message: 'Failed to place order' });
+    }
+  }
+);
+
 const cartSlice = createSlice({
   name: 'cart',
   initialState,
   reducers: {
     addToCart: (state, action: PayloadAction<{ item: Item; quantity: number }>) => {
       const { item, quantity } = action.payload;
-      
+
       const existingItem = state.items.find(i => i._id === item._id);
-      
+
       if (!existingItem && state.items.length >= 10) {
         alert("מקסימום 10 סוגי מוצרים שונים בעגלה!");
         return;
@@ -54,22 +73,14 @@ const cartSlice = createSlice({
     },
     clearCart: (state) => {
       state.items = [];
-    }
+    },
   },
   extraReducers: (builder) => {
     builder.addCase(placeOrder.fulfilled, (state) => {
       state.items = [];
     });
-  }
+  },
 });
-
-export const placeOrder = createAsyncThunk(
-  'cart/placeOrder',
-  async (orderData: CreateOrderInput) => {
-    const response = await orderService.placeOrder(orderData);
-    return response;
-  }
-);
 
 export const { addToCart, removeFromCart, updateQuantity, clearCart } = cartSlice.actions;
 export default cartSlice.reducer;

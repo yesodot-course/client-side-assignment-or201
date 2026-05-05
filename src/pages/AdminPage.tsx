@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
+import { useSearchParams } from "react-router-dom";
 import { addItem, deleteItem, updateItem, fetchItems } from "../store/itemsSlice";
 import { fetchSuppliers, addSupplier, deleteSupplier, updateSupplier } from "../store/suppliersSlice";
 import type { RootState, AppDispatch } from "../store/index";
@@ -22,8 +23,30 @@ import BarChartIcon from "@mui/icons-material/BarChart";
 import ReceiptLongIcon from "@mui/icons-material/ReceiptLong";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
 import ShoppingBagIcon from "@mui/icons-material/ShoppingBag";
+import ArchiveIcon from "@mui/icons-material/Archive";
+import UnarchiveIcon from "@mui/icons-material/Unarchive";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const ITEMS_PER_PAGE = 16;
+
+const ORDER_STATUSES = ["pending", "processing", "shipped", "delivered", "cancelled"] as const;
+type OrderStatus = typeof ORDER_STATUSES[number];
+
+/** Orders with these statuses are shown in the Archive section */
+const ARCHIVED_STATUSES: OrderStatus[] = ["delivered", "cancelled"];
+
+const STATUS_COLORS: Record<OrderStatus, "warning" | "info" | "primary" | "success" | "error"> = {
+    pending:    "warning",
+    processing: "info",
+    shipped:    "primary",
+    delivered:  "success",
+    cancelled:  "error",
+};
+
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ItemFormData {
     name: string;
@@ -57,31 +80,19 @@ const emptyItemForm: ItemFormData = {
 
 const emptySupplierForm: SupplierFormData = { name: "", contactInfo: "" };
 
-const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-
-const ITEMS_PER_PAGE = 10;
-
-// ─── Error extractor ─────────────────────────────────────────────────────────
-// Axios wraps server errors — we need to dig into response.data.message
+// ─── Error helper ─────────────────────────────────────────────────────────────
+// RTK unwrap() throws the rejectWithValue payload directly — just read .message
 function extractErrorMessage(err: unknown): string {
     if (err && typeof err === "object") {
-        // Redux Toolkit unwrap() throws the serialized error
         const e = err as any;
-        // Axios error via RTK: e.message is usually "Request failed with status code 4xx"
-        // The actual server message lives in e.response?.data or was serialized differently
-        if (e.response?.data?.message) return e.response.data.message;
-        if (e.response?.data?.errors) {
-            // Zod validation array
-            const errs = e.response.data.errors;
-            if (Array.isArray(errs)) return errs.map((x: any) => x.message ?? x).join(", ");
-        }
-        if (e.data?.message) return e.data.message;
-        if (e.message) return e.message;
+        if (typeof e.message === "string") return e.message;
+        if (Array.isArray(e.errors)) return e.errors.map((x: any) => x.message ?? x).join(", ");
     }
+    if (typeof err === "string") return err;
     return "An unknown error occurred";
 }
 
-// ─── StatCard ────────────────────────────────────────────────────────────────
+// ─── StatCard ─────────────────────────────────────────────────────────────────
 
 function StatCard({ title, value, sub, icon, color }: {
     title: string; value: string | number; sub?: string;
@@ -101,44 +112,63 @@ function StatCard({ title, value, sub, icon, color }: {
     );
 }
 
-// ─── AdminPage ───────────────────────────────────────────────────────────────
+// ─── AdminPage ────────────────────────────────────────────────────────────────
 
 function AdminPage() {
     const dispatch = useDispatch<AppDispatch>();
     const { items, totalItems, loading } = useSelector((state: RootState) => state.items);
     const { suppliers } = useSelector((state: RootState) => state.suppliers);
 
-    const [tab, setTab] = useState(0);
-    const [currentPage, setCurrentPage] = useState(1);
+    // URL search params for pagination (persists across browser nav)
+    const [searchParams, setSearchParams] = useSearchParams();
+    const tabParam  = parseInt(searchParams.get("tab")  ?? "0");
+    const pageParam = parseInt(searchParams.get("page") ?? "1");
+    const [tab, setTab]           = useState(isNaN(tabParam)  ? 0 : tabParam);
+    const [currentPage, setPage]  = useState(isNaN(pageParam) ? 1 : pageParam);
+
+    const setTabAndUrl = (newTab: number) => {
+        setTab(newTab);
+        setSearchParams({ tab: String(newTab), page: "1" });
+        setPage(1);
+    };
+
+    const setPageAndUrl = (newPage: number) => {
+        setPage(newPage);
+        setSearchParams({ tab: String(tab), page: String(newPage) });
+    };
 
     // Item state
-    const [itemForm, setItemForm] = useState<ItemFormData>(emptyItemForm);
-    const [editingItem, setEditingItem] = useState<Item | null>(null);
-    const [itemDialogOpen, setItemDialogOpen] = useState(false);
+    const [itemForm, setItemForm]         = useState<ItemFormData>(emptyItemForm);
+    const [editingItem, setEditingItem]   = useState<Item | null>(null);
+    const [itemDialogOpen, setItemDialog] = useState(false);
 
     // Supplier state
-    const [supplierForm, setSupplierForm] = useState<SupplierFormData>(emptySupplierForm);
-    const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
-    const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
+    const [supplierForm, setSupplierForm]           = useState<SupplierFormData>(emptySupplierForm);
+    const [editingSupplier, setEditingSupplier]     = useState<Supplier | null>(null);
+    const [supplierDialogOpen, setSupplierDialog]   = useState(false);
 
     // Analytics
-    const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+    const [analytics, setAnalytics]               = useState<AnalyticsData | null>(null);
     const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
     // Orders
-    const [orders, setOrders] = useState<any[]>([]);
+    const [orders, setOrders]               = useState<any[]>([]);
     const [ordersLoading, setOrdersLoading] = useState(false);
+    const [showArchive, setShowArchive]     = useState(false);
 
     // Snackbar
     const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" }>({
         open: false, message: "", severity: "success",
     });
 
-    // ── Fetch items & suppliers on mount (so Admin works without visiting Home first)
+    // ── Fetch on mount / page change
     useEffect(() => {
         dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
-        dispatch(fetchSuppliers());
     }, [dispatch, currentPage]);
+
+    useEffect(() => {
+        dispatch(fetchSuppliers());
+    }, [dispatch]);
 
     useEffect(() => {
         if (tab === 2 && !analytics) loadAnalytics();
@@ -153,7 +183,7 @@ function AdminPage() {
 
     const showError = (err: unknown) => showSnack(extractErrorMessage(err), "error");
 
-    // ─── Analytics ──────────────────────────────────────────────────────────
+    // ─── Analytics ────────────────────────────────────────────────────────────
 
     const loadAnalytics = async () => {
         setAnalyticsLoading(true);
@@ -182,7 +212,7 @@ function AdminPage() {
         }
     };
 
-    // ─── Orders ─────────────────────────────────────────────────────────────
+    // ─── Orders ───────────────────────────────────────────────────────────────
 
     const loadOrders = async () => {
         setOrdersLoading(true);
@@ -196,21 +226,35 @@ function AdminPage() {
         }
     };
 
-    // ─── Item helpers ────────────────────────────────────────────────────────
+    const handleStatusChange = async (orderId: string, newStatus: string) => {
+        // Optimistic update — change UI immediately, revert on error
+        setOrders(prev => prev.map(o => o._id === orderId ? { ...o, status: newStatus } : o));
+        try {
+            await orderService.updateStatus(orderId, newStatus);
+            showSnack(`Order status updated to "${newStatus}"`);
+        } catch (err) {
+            // Revert on failure
+            setOrders(prev => prev.map(o => o._id === orderId ? { ...o, status: o.status } : o));
+            showError(err);
+        }
+    };
 
-    // After populate, supplier is an object {_id, name}. Before populate it's a string ID.
-    // We handle both cases and fall back to looking up in the suppliers store.
+    // Split orders into active / archived
+    const activeOrders   = orders.filter(o => !ARCHIVED_STATUSES.includes(o.status));
+    const archivedOrders = orders.filter(o =>  ARCHIVED_STATUSES.includes(o.status));
+
+    // ─── Item helpers ──────────────────────────────────────────────────────────
+
     const getSupplierName = (supplier: Item["supplier"]): string => {
         if (!supplier) return "—";
         if (typeof supplier === "object") return (supplier as any).name ?? "—";
-        // It's a string ID — look up in redux store
-        const found = suppliers.find((s) => s._id === supplier);
+        const found = suppliers.find(s => s._id === supplier);
         return found ? found.name : "—";
     };
 
     const handleAddItem = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!itemForm.name || itemForm.price <= 0 || !itemForm.supplier) {
+        if (!itemForm.name || !itemForm.supplier || itemForm.supplierPrice <= 0) {
             showSnack("Please fill all required fields", "error");
             return;
         }
@@ -218,7 +262,6 @@ function AdminPage() {
             await dispatch(addItem(itemForm)).unwrap();
             setItemForm(emptyItemForm);
             showSnack("Product added successfully");
-            // Refresh current page so new item appears
             dispatch(fetchItems({ page: currentPage, limit: ITEMS_PER_PAGE }));
         } catch (err) {
             showError(err);
@@ -232,23 +275,23 @@ function AdminPage() {
                 ? (item.supplier as any)._id
                 : item.supplier;
         setItemForm({
-            name: item.name,
-            price: item.price ?? 0,
-            category: item.category ?? "",
-            image: (item as any).image ?? "",
-            stock: item.stock,
-            description: (item as any).description ?? "",
-            supplier: supplierId ?? "",
+            name:          item.name,
+            price:         item.price ?? 0,
+            category:      item.category ?? "",
+            image:         (item as any).image ?? "",
+            stock:         item.stock,
+            description:   (item as any).description ?? "",
+            supplier:      supplierId ?? "",
             supplierPrice: item.supplierPrice,
         });
-        setItemDialogOpen(true);
+        setItemDialog(true);
     };
 
     const handleUpdateItem = async () => {
         if (!editingItem) return;
         try {
             await dispatch(updateItem({ id: editingItem._id, data: itemForm })).unwrap();
-            setItemDialogOpen(false);
+            setItemDialog(false);
             setEditingItem(null);
             setItemForm(emptyItemForm);
             showSnack("Product updated successfully");
@@ -267,7 +310,7 @@ function AdminPage() {
             .catch(showError);
     };
 
-    // ─── Supplier helpers ────────────────────────────────────────────────────
+    // ─── Supplier helpers ──────────────────────────────────────────────────────
 
     const handleAddSupplier = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -284,14 +327,14 @@ function AdminPage() {
     const openEditSupplier = (supplier: Supplier) => {
         setEditingSupplier(supplier);
         setSupplierForm({ name: supplier.name, contactInfo: (supplier as any).contactInfo ?? "" });
-        setSupplierDialogOpen(true);
+        setSupplierDialog(true);
     };
 
     const handleUpdateSupplier = async () => {
         if (!editingSupplier) return;
         try {
             await dispatch(updateSupplier({ id: editingSupplier._id, data: supplierForm })).unwrap();
-            setSupplierDialogOpen(false);
+            setSupplierDialog(false);
             setEditingSupplier(null);
             setSupplierForm(emptySupplierForm);
             showSnack("Supplier updated successfully");
@@ -307,7 +350,7 @@ function AdminPage() {
             .catch(showError);
     };
 
-    // ─── Shared item fields (used in both Add form and Edit dialog) ──────────
+    // ─── Shared item form fields ───────────────────────────────────────────────
 
     const renderItemFields = () => (
         <>
@@ -318,7 +361,7 @@ function AdminPage() {
                 <InputLabel>Supplier</InputLabel>
                 <Select value={itemForm.supplier} label="Supplier"
                     onChange={(e) => setItemForm({ ...itemForm, supplier: e.target.value })}>
-                    {suppliers.map((s) => (
+                    {suppliers.map(s => (
                         <MenuItem key={s._id} value={s._id}>{s.name}</MenuItem>
                     ))}
                 </Select>
@@ -328,7 +371,7 @@ function AdminPage() {
                     slotProps={{ htmlInput: { min: 0 } }}
                     value={itemForm.supplierPrice}
                     onChange={(e) => setItemForm({ ...itemForm, supplierPrice: Number(e.target.value) })} />
-                <TextField label="Retail Price" type="number" size="small" fullWidth required
+                <TextField label="Retail Price (0 = auto +30%)" type="number" size="small" fullWidth
                     slotProps={{ htmlInput: { min: 0 } }}
                     value={itemForm.price}
                     onChange={(e) => setItemForm({ ...itemForm, price: Number(e.target.value) })} />
@@ -343,10 +386,91 @@ function AdminPage() {
             <TextField label="Image URL" size="small" fullWidth
                 value={itemForm.image}
                 onChange={(e) => setItemForm({ ...itemForm, image: e.target.value })} />
+            <TextField label="Description" size="small" fullWidth multiline rows={3}
+                placeholder="Enter product description..."
+                value={itemForm.description}
+                onChange={(e) => setItemForm({ ...itemForm, description: e.target.value })} />
         </>
     );
 
-    // ─── Render ──────────────────────────────────────────────────────────────
+    // ─── Orders table renderer ─────────────────────────────────────────────────
+
+    const renderOrdersTable = (orderList: any[]) => (
+        <TableContainer component={Paper} elevation={2} sx={{ borderRadius: 2 }}>
+            <Table>
+                <TableHead sx={{ bgcolor: "grey.100" }}>
+                    <TableRow>
+                        <TableCell sx={{ fontWeight: "bold" }}>Order ID</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }}>Date</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }}>Address</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }}>Items</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }} align="right">Total</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }} align="right">Profit</TableCell>
+                        <TableCell sx={{ fontWeight: "bold" }} align="center">Status</TableCell>
+                    </TableRow>
+                </TableHead>
+                <TableBody>
+                    {orderList.length === 0 ? (
+                        <TableRow>
+                            <TableCell colSpan={7} align="center" sx={{ py: 4, color: "text.secondary" }}>
+                                No orders found
+                            </TableCell>
+                        </TableRow>
+                    ) : orderList.map((order) => (
+                        <TableRow key={order._id} hover>
+                            <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>
+                                {String(order._id).slice(-8)}
+                            </TableCell>
+                            <TableCell>
+                                {new Date(order.orderDate ?? order.createdAt).toLocaleDateString("he-IL")}
+                            </TableCell>
+                            <TableCell sx={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {order.address}
+                            </TableCell>
+                            <TableCell>
+                                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                                    {order.items?.map((oi: any, i: number) => (
+                                        <Chip key={i} size="small"
+                                            label={`${oi.item?.name ?? "Item"} ×${oi.quantity}`} />
+                                    ))}
+                                </Box>
+                            </TableCell>
+                            <TableCell align="right">₪{Number(order.totalAmount).toFixed(2)}</TableCell>
+                            <TableCell align="right">
+                                <Typography fontWeight="bold"
+                                    color={order.shopProfit >= 0 ? "success.main" : "error.main"}>
+                                    ₪{Number(order.shopProfit).toFixed(2)}
+                                </Typography>
+                            </TableCell>
+                            <TableCell align="center">
+                                <FormControl size="small" sx={{ minWidth: 130 }}>
+                                    <Select
+                                        value={order.status ?? "pending"}
+                                        onChange={(e) => handleStatusChange(order._id, e.target.value)}
+                                        renderValue={(val) => (
+                                            <Chip
+                                                label={val}
+                                                size="small"
+                                                color={STATUS_COLORS[val as OrderStatus] ?? "default"}
+                                            />
+                                        )}
+                                    >
+                                        {ORDER_STATUSES.map(s => (
+                                            <MenuItem key={s} value={s}>
+                                                <Chip label={s} size="small" color={STATUS_COLORS[s]} />
+                                            </MenuItem>
+                                        ))}
+                                    </Select>
+                                </FormControl>
+                            </TableCell>
+                        </TableRow>
+                    ))}
+                </TableBody>
+            </Table>
+        </TableContainer>
+    );
+
+    // ─── Render ───────────────────────────────────────────────────────────────
 
     return (
         <Container maxWidth="lg" sx={{ py: 4 }}>
@@ -356,7 +480,7 @@ function AdminPage() {
             </Typography>
             <Divider sx={{ mb: 2 }} />
 
-            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3 }}>
+            <Tabs value={tab} onChange={(_, v) => setTabAndUrl(v)} sx={{ mb: 3 }}>
                 <Tab icon={<InventoryIcon />}   label="Products"  iconPosition="start" />
                 <Tab icon={<PeopleIcon />}      label="Suppliers" iconPosition="start" />
                 <Tab icon={<BarChartIcon />}    label="Analytics" iconPosition="start" />
@@ -367,7 +491,6 @@ function AdminPage() {
             {tab === 0 && (
                 <Box sx={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     <Box sx={{ display: "grid", gap: 4, gridTemplateColumns: { xs: "1fr", md: "360px 1fr" } }}>
-                        {/* Add form */}
                         <Paper elevation={3} sx={{ p: 3, borderRadius: 2 }}>
                             <Typography variant="h6" gutterBottom fontWeight="bold">Add New Product</Typography>
                             <Box component="form" onSubmit={handleAddItem}
@@ -379,7 +502,6 @@ function AdminPage() {
                             </Box>
                         </Paper>
 
-                        {/* Products table */}
                         <Box>
                             {loading ? (
                                 <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
@@ -399,9 +521,17 @@ function AdminPage() {
                                             </TableRow>
                                         </TableHead>
                                         <TableBody>
-                                            {items.map((item) => (
+                                            {items.map(item => (
                                                 <TableRow key={item._id} hover>
-                                                    <TableCell>{item.name}</TableCell>
+                                                    <TableCell>
+                                                        <Typography fontWeight="medium">{item.name}</Typography>
+                                                        {(item as any).description && (
+                                                            <Typography variant="caption" color="text.secondary"
+                                                                sx={{ display: "block", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                                {(item as any).description}
+                                                            </Typography>
+                                                        )}
+                                                    </TableCell>
                                                     <TableCell>{getSupplierName(item.supplier)}</TableCell>
                                                     <TableCell align="right">₪{item.supplierPrice}</TableCell>
                                                     <TableCell align="right">₪{item.price}</TableCell>
@@ -424,13 +554,12 @@ function AdminPage() {
                                 </TableContainer>
                             )}
 
-                            {/* Pagination */}
                             {totalItems > ITEMS_PER_PAGE && (
                                 <Box sx={{ display: "flex", justifyContent: "center", mt: 3 }}>
                                     <Pagination
                                         count={Math.ceil(totalItems / ITEMS_PER_PAGE)}
                                         page={currentPage}
-                                        onChange={(_, v) => setCurrentPage(v)}
+                                        onChange={(_, v) => setPageAndUrl(v)}
                                         color="primary"
                                     />
                                 </Box>
@@ -469,7 +598,7 @@ function AdminPage() {
                                 </TableRow>
                             </TableHead>
                             <TableBody>
-                                {suppliers.map((supplier) => (
+                                {suppliers.map(supplier => (
                                     <TableRow key={supplier._id} hover>
                                         <TableCell>{supplier.name}</TableCell>
                                         <TableCell>{(supplier as any).contactInfo ?? "—"}</TableCell>
@@ -500,46 +629,28 @@ function AdminPage() {
                         <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
                             <Grid container spacing={2}>
                                 <Grid item xs={12} sm={6} md={3}>
-                                    <StatCard
-                                        title="Top Supplier (Profit)"
+                                    <StatCard title="Top Supplier (Profit)"
                                         value={analytics.topSupplier?.name ?? "N/A"}
                                         sub={analytics.topSupplier ? `₪${analytics.topSupplier.totalProfit}` : undefined}
-                                        icon={<TrendingUpIcon fontSize="inherit" />}
-                                        color="#1976d2"
-                                    />
+                                        icon={<TrendingUpIcon fontSize="inherit" />} color="#1976d2" />
                                 </Grid>
                                 <Grid item xs={12} sm={6} md={3}>
-                                    <StatCard
-                                        title="Top Category (7 days)"
+                                    <StatCard title="Top Category (7 days)"
                                         value={analytics.topCategory?._id ?? "N/A"}
-                                        sub={analytics.topCategory
-                                            ? `₪${Number(analytics.topCategory.categoryProfit).toFixed(2)}`
-                                            : undefined}
-                                        icon={<ShoppingBagIcon fontSize="inherit" />}
-                                        color="#9c27b0"
-                                    />
+                                        sub={analytics.topCategory ? `₪${Number(analytics.topCategory.categoryProfit).toFixed(2)}` : undefined}
+                                        icon={<ShoppingBagIcon fontSize="inherit" />} color="#9c27b0" />
                                 </Grid>
                                 <Grid item xs={12} sm={6} md={3}>
-                                    <StatCard
-                                        title="Top Item Today"
+                                    <StatCard title="Top Item Today"
                                         value={analytics.topItemDaily?.name ?? "N/A"}
-                                        sub={analytics.topItemDaily
-                                            ? `₪${Number(analytics.topItemDaily.totalProfit).toFixed(2)} profit`
-                                            : undefined}
-                                        icon={<BarChartIcon fontSize="inherit" />}
-                                        color="#ed6c02"
-                                    />
+                                        sub={analytics.topItemDaily ? `₪${Number(analytics.topItemDaily.totalProfit).toFixed(2)} profit` : undefined}
+                                        icon={<BarChartIcon fontSize="inherit" />} color="#ed6c02" />
                                 </Grid>
                                 <Grid item xs={12} sm={6} md={3}>
-                                    <StatCard
-                                        title="Best Margin"
+                                    <StatCard title="Best Margin"
                                         value={analytics.profitMargins?.highestMargin?.name ?? "N/A"}
-                                        sub={analytics.profitMargins?.highestMargin
-                                            ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%`
-                                            : undefined}
-                                        icon={<TrendingUpIcon fontSize="inherit" />}
-                                        color="#2e7d32"
-                                    />
+                                        sub={analytics.profitMargins?.highestMargin ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%` : undefined}
+                                        icon={<TrendingUpIcon fontSize="inherit" />} color="#2e7d32" />
                                 </Grid>
                             </Grid>
 
@@ -601,16 +712,14 @@ function AdminPage() {
                                             <Typography variant="body2" color="text.secondary">Highest Margin</Typography>
                                             <Typography fontWeight="bold">{analytics.profitMargins.highestMargin?.name ?? "N/A"}</Typography>
                                             <Typography color="success.main">
-                                                {analytics.profitMargins.highestMargin
-                                                    ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%` : ""}
+                                                {analytics.profitMargins.highestMargin ? `${(analytics.profitMargins.highestMargin.margin * 100).toFixed(1)}%` : ""}
                                             </Typography>
                                         </Box>
                                         <Box>
                                             <Typography variant="body2" color="text.secondary">Lowest Margin</Typography>
                                             <Typography fontWeight="bold">{analytics.profitMargins.lowestMargin?.name ?? "N/A"}</Typography>
                                             <Typography color="error.main">
-                                                {analytics.profitMargins.lowestMargin
-                                                    ? `${(analytics.profitMargins.lowestMargin.margin * 100).toFixed(1)}%` : ""}
+                                                {analytics.profitMargins.lowestMargin ? `${(analytics.profitMargins.lowestMargin.margin * 100).toFixed(1)}%` : ""}
                                             </Typography>
                                         </Box>
                                     </Box>
@@ -638,65 +747,54 @@ function AdminPage() {
                             <CircularProgress />
                         </Box>
                     ) : (
-                        <>
-                            <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 2 }}>
-                                <Button variant="outlined" onClick={loadOrders}>Refresh</Button>
+                        <Box sx={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                            {/* Toolbar */}
+                            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                <Typography variant="h6" fontWeight="bold">
+                                    {showArchive ? (
+                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                            <ArchiveIcon /> Archive
+                                            <Chip label={archivedOrders.length} size="small" color="default" />
+                                        </Box>
+                                    ) : (
+                                        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                            Active Orders
+                                            <Chip label={activeOrders.length} size="small" color="primary" />
+                                        </Box>
+                                    )}
+                                </Typography>
+                                <Box sx={{ display: "flex", gap: 1 }}>
+                                    <Button
+                                        variant={showArchive ? "contained" : "outlined"}
+                                        startIcon={showArchive ? <UnarchiveIcon /> : <ArchiveIcon />}
+                                        onClick={() => setShowArchive(v => !v)}
+                                        color={showArchive ? "inherit" : "primary"}
+                                    >
+                                        {showArchive ? "Show Active" : `Archive (${archivedOrders.length})`}
+                                    </Button>
+                                    <Button variant="outlined" onClick={loadOrders}>Refresh</Button>
+                                </Box>
                             </Box>
-                            <TableContainer component={Paper} elevation={3} sx={{ borderRadius: 2 }}>
-                                <Table>
-                                    <TableHead sx={{ bgcolor: "grey.100" }}>
-                                        <TableRow>
-                                            <TableCell sx={{ fontWeight: "bold" }}>Order ID</TableCell>
-                                            <TableCell sx={{ fontWeight: "bold" }}>Date</TableCell>
-                                            <TableCell sx={{ fontWeight: "bold" }}>Address</TableCell>
-                                            <TableCell sx={{ fontWeight: "bold" }}>Items</TableCell>
-                                            <TableCell sx={{ fontWeight: "bold" }} align="right">Total</TableCell>
-                                            <TableCell sx={{ fontWeight: "bold" }} align="right">Profit</TableCell>
-                                        </TableRow>
-                                    </TableHead>
-                                    <TableBody>
-                                        {orders.length === 0 ? (
-                                            <TableRow>
-                                                <TableCell colSpan={6} align="center" sx={{ py: 4, color: "text.secondary" }}>
-                                                    No orders found
-                                                </TableCell>
-                                            </TableRow>
-                                        ) : orders.map((order) => (
-                                            <TableRow key={order._id} hover>
-                                                <TableCell sx={{ fontFamily: "monospace", fontSize: 12 }}>
-                                                    {String(order._id).slice(-8)}
-                                                </TableCell>
-                                                <TableCell>
-                                                    {new Date(order.orderDate ?? order.createdAt).toLocaleDateString("he-IL")}
-                                                </TableCell>
-                                                <TableCell>{order.address}</TableCell>
-                                                <TableCell>
-                                                    <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-                                                        {order.items?.map((oi: any, i: number) => (
-                                                            <Chip key={i} size="small"
-                                                                label={`${oi.item?.name ?? "Item"} ×${oi.quantity}`} />
-                                                        ))}
-                                                    </Box>
-                                                </TableCell>
-                                                <TableCell align="right">₪{Number(order.totalAmount).toFixed(2)}</TableCell>
-                                                <TableCell align="right">
-                                                    <Typography fontWeight="bold"
-                                                        color={order.shopProfit >= 0 ? "success.main" : "error.main"}>
-                                                        ₪{Number(order.shopProfit).toFixed(2)}
-                                                    </Typography>
-                                                </TableCell>
-                                            </TableRow>
-                                        ))}
-                                    </TableBody>
-                                </Table>
-                            </TableContainer>
-                        </>
+
+                            {/* Active orders */}
+                            {!showArchive && renderOrdersTable(activeOrders)}
+
+                            {/* Archive */}
+                            {showArchive && (
+                                <Box>
+                                    <Alert severity="info" sx={{ mb: 2 }}>
+                                        Archive shows orders with status <strong>delivered</strong> or <strong>cancelled</strong>.
+                                    </Alert>
+                                    {renderOrdersTable(archivedOrders)}
+                                </Box>
+                            )}
+                        </Box>
                     )}
                 </Box>
             )}
 
             {/* ══════════════ EDIT ITEM DIALOG ══════════════ */}
-            <Dialog open={itemDialogOpen} onClose={() => setItemDialogOpen(false)} maxWidth="sm" fullWidth>
+            <Dialog open={itemDialogOpen} onClose={() => setItemDialog(false)} maxWidth="sm" fullWidth>
                 <DialogTitle>Edit Product</DialogTitle>
                 <DialogContent>
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
@@ -704,13 +802,13 @@ function AdminPage() {
                     </Box>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setItemDialogOpen(false)}>Cancel</Button>
+                    <Button onClick={() => setItemDialog(false)}>Cancel</Button>
                     <Button variant="contained" onClick={handleUpdateItem}>Save Changes</Button>
                 </DialogActions>
             </Dialog>
 
             {/* ══════════════ EDIT SUPPLIER DIALOG ══════════════ */}
-            <Dialog open={supplierDialogOpen} onClose={() => setSupplierDialogOpen(false)} maxWidth="sm" fullWidth>
+            <Dialog open={supplierDialogOpen} onClose={() => setSupplierDialog(false)} maxWidth="sm" fullWidth>
                 <DialogTitle>Edit Supplier</DialogTitle>
                 <DialogContent>
                     <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 1 }}>
@@ -723,7 +821,7 @@ function AdminPage() {
                     </Box>
                 </DialogContent>
                 <DialogActions>
-                    <Button onClick={() => setSupplierDialogOpen(false)}>Cancel</Button>
+                    <Button onClick={() => setSupplierDialog(false)}>Cancel</Button>
                     <Button variant="contained" onClick={handleUpdateSupplier}>Save Changes</Button>
                 </DialogActions>
             </Dialog>

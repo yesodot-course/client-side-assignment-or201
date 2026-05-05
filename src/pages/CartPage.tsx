@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import type { RootState, AppDispatch } from '../store/index';
 import { removeFromCart, updateQuantity, placeOrder } from '../store/cartSlice.store';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
     Container, Typography, Box, Paper, Table, TableHead, TableRow,
     TableCell, TableBody, TableContainer, IconButton, TextField, Button,
@@ -15,6 +15,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 function CartPage() {
     const { items } = useSelector((state: RootState) => state.cart);
     const dispatch = useDispatch<AppDispatch>();
+    const navigate = useNavigate();
 
     const [address, setAddress] = useState('');
     const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
@@ -50,9 +51,8 @@ function CartPage() {
 
         try {
             const orderData = {
-                // Server expects: { items: [{ item: id, quantity }], address }
                 items: items.map(item => ({
-                    item: item._id,       // ← "item" not "itemId"
+                    item: item._id,       // server expects "item", not "itemId"
                     quantity: item.quantity,
                 })),
                 address: address.trim(),
@@ -61,12 +61,13 @@ function CartPage() {
             await dispatch(placeOrder(orderData as any)).unwrap();
             setSnackbar({ open: true, message: 'Order placed successfully! 🎉', severity: 'success' });
             setAddress('');
+            // Navigate home after short delay
+            setTimeout(() => navigate('/'), 1500);
         } catch (err: any) {
-            // Extract real server message from axios error
+            // rejectWithValue returns the server payload directly
             const msg =
-                err?.response?.data?.message ??
-                err?.data?.message ??
                 err?.message ??
+                err?.errors?.map((e: any) => e.message).join(', ') ??
                 'Failed to place order';
             setSnackbar({ open: true, message: msg, severity: 'error' });
         }
@@ -118,7 +119,13 @@ function CartPage() {
                                         size="small"
                                         value={item.quantity}
                                         onChange={(e) => handleQtyChange(item._id, parseInt(e.target.value) || 1, item.stock)}
-                                        slotProps={{ htmlInput: { min: 1, max: Math.min(10, item.stock), style: { textAlign: 'center', width: 60 } } }}
+                                        slotProps={{
+                                            htmlInput: {
+                                                min: 1,
+                                                max: Math.min(10, item.stock),
+                                                style: { textAlign: 'center', width: 60 },
+                                            },
+                                        }}
                                     />
                                 </TableCell>
                                 <TableCell align="right">
@@ -142,8 +149,11 @@ function CartPage() {
                         {items.length} product type{items.length !== 1 ? 's' : ''} ·{' '}
                         {items.reduce((s, i) => s + i.quantity, 0)} items
                     </Typography>
-                    <Chip label={`Total: ₪${totalAmount.toFixed(2)}`}
-                        color="primary" sx={{ fontSize: 16, fontWeight: 'bold', px: 1 }} />
+                    <Chip
+                        label={`Total: ₪${totalAmount.toFixed(2)}`}
+                        color="primary"
+                        sx={{ fontSize: 16, fontWeight: 'bold', px: 1 }}
+                    />
                 </Box>
 
                 <TextField
@@ -161,19 +171,26 @@ function CartPage() {
                     <Button component={Link} to="/" variant="outlined" startIcon={<ArrowBackIcon />}>
                         Continue Shopping
                     </Button>
-                    <Button variant="contained" color="success" size="large"
+                    <Button
+                        variant="contained"
+                        color="success"
+                        size="large"
                         startIcon={<ShoppingCartCheckoutIcon />}
                         onClick={handlePlaceOrder}
                         disabled={items.length === 0}
-                        sx={{ flexGrow: 1 }}>
+                        sx={{ flexGrow: 1 }}
+                    >
                         Place Order · ₪{totalAmount.toFixed(2)}
                     </Button>
                 </Box>
             </Paper>
 
-            <Snackbar open={snackbar.open} autoHideDuration={5000}
+            <Snackbar
+                open={snackbar.open}
+                autoHideDuration={5000}
                 onClose={() => setSnackbar({ ...snackbar, open: false })}
-                anchorOrigin={{ vertical: 'top', horizontal: 'center' }}>
+                anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+            >
                 <Alert severity={snackbar.severity} onClose={() => setSnackbar({ ...snackbar, open: false })}>
                     {snackbar.message}
                 </Alert>

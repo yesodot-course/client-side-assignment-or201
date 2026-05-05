@@ -34,7 +34,7 @@ export const itemService = {
         const response = await apiClient.post<Item>("/items", item);
         return response.data;
     },
-    // FIX: was PUT, server expects PATCH
+    // PATCH not PUT — matches server route
     update: async (id: string, item: Partial<Item>) => {
         const response = await apiClient.patch<Item>(`/items/${id}`, item);
         return response.data;
@@ -71,6 +71,10 @@ export const orderService = {
     },
     getAll: async () => {
         const response = await apiClient.get<Order[]>("/orders");
+        return response.data;
+    },
+    updateStatus: async (id: string, status: string) => {
+        const response = await apiClient.patch(`/orders/${id}/status`, { status });
         return response.data;
     },
 };
